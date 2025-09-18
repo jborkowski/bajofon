@@ -9,10 +9,10 @@ import torch
 
 # --- Configuration ---
 MODEL_NAME = "openai/whisper-medium"
-//MODEL_NAME = "openai/whisper-large-v3"
+##MODEL_NAME = "openai/whisper-large-v3"
 SAMPLE_RATE = 16000  # Whisper models are trained on 16kHz audio
 CHANNELS = 1
-CHUNK_SECONDS = 5  # Duration of each audio chunk in seconds
+CHUNK_SECONDS = 30  # Duration of each audio chunk in seconds
 OUTPUT_DIR = "notes"
 SUPPORTED_LANGUAGES = {"pl", "en", "es"}
 
@@ -58,6 +58,8 @@ def main():
         model=MODEL_NAME,
         device=device,
         dtype=torch_dtype,
+        chunk_length_s=SAMPLE_RATE,
+        ignore_warning=True,
     )
     print("Model loaded. Ready to take notes.")
 
