@@ -8,11 +8,25 @@ import time
 import torch
 
 # --- Configuration ---
-MODEL_NAME = "openai/whisper-large-v3"
+MODEL_NAME = "openai/whisper-medium"
+//MODEL_NAME = "openai/whisper-large-v3"
 SAMPLE_RATE = 16000  # Whisper models are trained on 16kHz audio
 CHANNELS = 1
 CHUNK_SECONDS = 5  # Duration of each audio chunk in seconds
 OUTPUT_DIR = "notes"
+SUPPORTED_LANGUAGES = {"pl", "en", "es"}
+
+
+def get_language_choice():
+    """Prompts the user to select a language and validates the input."""
+    while True:
+        lang = input(f"Choose a language ({', '.join(SUPPORTED_LANGUAGES)}): ").lower()
+        if lang in SUPPORTED_LANGUAGES:
+            return lang
+        else:
+            print(
+                f"Invalid language. Please choose from: {', '.join(SUPPORTED_LANGUAGES)}"
+            )
 
 
 def main():
@@ -51,13 +65,19 @@ def main():
         while True:
             input("\nPress Enter to start a new note session (or Ctrl+C to exit)...")
 
+            language = get_language_choice()
+
             # --- Create a new note file for the session ---
             if not os.path.exists(OUTPUT_DIR):
                 os.makedirs(OUTPUT_DIR)
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            session_filename = os.path.join(OUTPUT_DIR, f"note_{timestamp}.txt")
+            session_filename = os.path.join(
+                OUTPUT_DIR, f"note_{timestamp}_{language}.txt"
+            )
 
-            print(f"\nNew note session started. Saving to: {session_filename}")
+            print(
+                f"\nNew note session started. Language: {language.upper()}. Saving to: {session_filename}"
+            )
             print(
                 f"Recording in {CHUNK_SECONDS}-second chunks... Press Ctrl+C to stop and save."
             )
@@ -77,21 +97,27 @@ def main():
 
                         # 2. Save the chunk to a temporary WAV file
                         temp_audio_file = "temp_chunk.wav"
-                        # Ensure data is in a writable format (e.g., float32 or int16)
                         write(
                             temp_audio_file, SAMPLE_RATE, audio_chunk.astype(np.float32)
                         )
 
                         # 3. Transcribe the chunk
                         print("Transcribing chunk...")
-                        result = transcriber(temp_audio_file)
+                        result = transcriber(
+                            temp_audio_file,
+                            generate_kwargs={
+                                "language": language,
+                                "task": "transcribe",
+                            },
+                        )
                         transcription = result["text"]
 
                         # 4. Append to the file and print to the console
                         if transcription.strip():
-                            print(f"  -> Appending: '{transcription.strip()}'")
-                            f.write(transcription + " ")
-                            f.flush()  # Ensure the text is written to the file immediately
+                            clean_text = transcription.strip()
+                            print(f"  -> Appending: '{clean_text}'")
+                            f.write(clean_text + "\n")
+                            f.flush()
                         else:
                             print("  -> No speech detected in this chunk.")
 
@@ -103,7 +129,6 @@ def main():
                     f"\n\nNote session finished. Your note is saved in {session_filename}"
                 )
                 print("--------------------------------------------------")
-                # This allows the outer loop to continue for a new session
                 pass
 
     except KeyboardInterrupt:
