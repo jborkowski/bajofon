@@ -6,6 +6,7 @@ import datetime
 import os
 import time
 import torch
+import traceback
 
 # --- Configuration ---
 MODEL_NAME = "openai/whisper-medium"
@@ -137,6 +138,7 @@ def main():
         print("\nExiting note taker. Goodbye!")
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
