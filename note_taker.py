@@ -41,16 +41,9 @@ def main():
     else:
         device = "cpu"
 
-    dtype_map = {
-        "cpu": "float32",
-        "mps": "float32",
-        "cuda": "float16",
-    }
-
     torch_dtype = torch.float16 if device == "cuda" else torch.float32
-    numpy_dtype = dtype_map[device]
 
-    print(f"Using device: {device.upper()} with data type: {numpy_dtype}")
+    print(f"Using device: {device.upper()} with data type: {torch_dtype}")
 
     print("Loading the Whisper model...")
     # Load the model once at the beginning
@@ -94,14 +87,14 @@ def main():
                             int(CHUNK_SECONDS * SAMPLE_RATE),
                             samplerate=SAMPLE_RATE,
                             channels=CHANNELS,
-                            dtype=numpy_dtype,
+                            dtype=np.float32,
                         )
                         sd.wait()  # Wait for the recording to complete
 
                         # 2. Save the chunk to a temporary WAV file
                         temp_audio_file = "temp_chunk.wav"
                         write(
-                            temp_audio_file, SAMPLE_RATE, audio_chunk.astype(np.float32)
+                            temp_audio_file, SAMPLE_RATE, audio_chunk
                         )
 
                         # 3. Transcribe the chunk
