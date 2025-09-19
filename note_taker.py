@@ -8,6 +8,8 @@ import time
 import torch
 import traceback
 
+from silero_vad import load_silero_vad, read_audio, get_speech_timestamps
+
 # --- Configuration ---
 MODEL_NAME = "openai/whisper-medium"
 ##MODEL_NAME = "openai/whisper-large-v3"
@@ -57,11 +59,14 @@ def main():
     )
     print("Model loaded. Ready to take notes.")
 
+    vad = load_silero_vad()
+
     try:
         while True:
             input("\nPress Enter to start a new note session (or Ctrl+C to exit)...")
 
-            language = get_language_choice()
+            #language = get_language_choice()
+            language = 'pl'
 
             # --- Create a new note file for the session ---
             if not os.path.exists(OUTPUT_DIR):
@@ -79,46 +84,30 @@ def main():
             )
 
             try:
-                with open(session_filename, "a") as f:
-                    while True:
-                        # 1. Record a chunk of audio
-                        print(f"Recording a {CHUNK_SECONDS}-second chunk...")
-                        audio_chunk = sd.rec(
-                            int(CHUNK_SECONDS * SAMPLE_RATE),
-                            samplerate=SAMPLE_RATE,
-                            channels=CHANNELS,
-                            dtype=np.float32,
-                        )
-                        sd.wait()  # Wait for the recording to complete
+                with open(session_filename, "a"):
+                    with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=np.float32) as stream:
+                        def chunk_generator():
+                            buffer = []
+                            while not stream.closed:
+                                data, _ = stream.read(5 * SAMPLE_RATE)
+                                data = data.squeeze()
+                                buffer.append(data)
+                                print(data)
+                                timestamps = get_speech_timestamps(data, vad)
+                                print(timestamps)
+                                yield data
 
-                        # 2. Save the chunk to a temporary WAV file
-                        temp_audio_file = "temp_chunk.wav"
-                        write(
-                            temp_audio_file, SAMPLE_RATE, audio_chunk
-                        )
-
-                        # 3. Transcribe the chunk
-                        print("Transcribing chunk...")
-                        result = transcriber(
-                            temp_audio_file,
+                        results = transcriber(
+                            chunk_generator(), # type: ignore
                             generate_kwargs={
                                 "language": language,
                                 "task": "transcribe",
                             },
                         )
-                        transcription = result["text"]
 
-                        # 4. Append to the file and print to the console
-                        if transcription.strip():
-                            clean_text = transcription.strip()
-                            print(f"  -> Appending: '{clean_text}'")
-                            f.write(clean_text + "\n")
-                            f.flush()
-                        else:
-                            print("  -> No speech detected in this chunk.")
+                        for result in results:
+                            print(result)
 
-                        # 5. Clean up the temporary file
-                        os.remove(temp_audio_file)
 
             except KeyboardInterrupt:
                 print(
