@@ -8,7 +8,7 @@ import time
 import torch
 import traceback
 
-from silero_vad import load_silero_vad, read_audio, get_speech_timestamps
+from silero_vad import load_silero_vad, VADIterator
 
 # --- Configuration ---
 MODEL_NAME = "openai/whisper-medium"
@@ -56,7 +56,7 @@ def main():
 
     try:
         while True:
-            input("\nPress Enter to start a new note session (or Ctrl+C to exit)...")
+            # input("\nPress Enter to start a new note session (or Ctrl+C to exit)...")
 
             #language = get_language_choice()
             language = 'pl'
@@ -79,35 +79,49 @@ def main():
             try:
                 with open(session_filename, "a"):
                     with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=np.float32) as stream:
+                        vad_iterator = VADIterator(vad, sampling_rate=16000, threshold=0.3)
                         buffer = []
+                        in_speech = False
+                        chunk_size = 512
+                        max_chunks_for_whisper = SAMPLE_RATE * 30 // chunk_size
                         while not stream.closed:
-                            data, _ = stream.read(int(0.5 * SAMPLE_RATE))
+                            data, _ = stream.read(chunk_size)
                             data = data.squeeze()
-                            buffer.append(data)
-                            if len(buffer) > 30:
-                                buffer = buffer[-30:]
 
-                            chunk = np.concatenate(buffer)
-                            print(f"produced a chunk: {chunk.shape}")
+                            speech_segments = vad_iterator(data)
+                            if speech_segments is not None and 'start' in speech_segments:
+                                # TODO: add a bit of pre-padding
+                                in_speech = True
 
-                            inputs = processor(chunk, sampling_rate=SAMPLE_RATE, return_tensors="pt").to(device, dtype=torch_dtype)
+                            if in_speech:
+                                buffer.append(data)
+                                if len(buffer) > max_chunks_for_whisper:
+                                    buffer = buffer[-max_chunks_for_whisper:]
 
-                            # run generate with forced start tokens
-                            with torch.no_grad():
-                                generated_ids = model.generate(
-                                        **inputs,
-                                        #   decoder_input_ids=prompt_ids
-                                        return_timestamps=True
-                                        )
+                            if speech_segments is not None and 'end' in speech_segments:
+                                # TODO: remove non-speech from the end
 
-                            tokens = generated_ids[0].tolist()
-                            decoded = processor.tokenizer.convert_ids_to_tokens(tokens)
-                            print(decoded)
-                         
-                            # decode to text
-                            text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+                                chunk = np.concatenate(buffer)
+                                print(f"produced a chunk: {chunk.shape}")
 
-                            print(text)
+                                inputs = processor(chunk, sampling_rate=SAMPLE_RATE, return_tensors="pt").to(device, dtype=torch_dtype)
+
+                                # run generate with forced start tokens
+                                with torch.no_grad():
+                                    generated_ids = model.generate(
+                                            **inputs,
+                                            #   decoder_input_ids=prompt_ids
+                                            return_timestamps=True
+                                            )
+
+                                tokens = generated_ids[0].tolist()
+                                decoded = processor.tokenizer.convert_ids_to_tokens(tokens)
+                                print(decoded)
+                             
+                                # decode to text
+                                text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+                                print(text)
 
 
             except KeyboardInterrupt:
@@ -115,6 +129,7 @@ def main():
                     f"\n\nNote session finished. Your note is saved in {session_filename}"
                 )
                 print("--------------------------------------------------")
+                raise
                 pass
 
     except KeyboardInterrupt:
