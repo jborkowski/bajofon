@@ -89,7 +89,6 @@ def main():
                         in_speech = False
 
                         current_frame = 0
-                        speech_start = 0
                         while not stream.closed:
                             data, _ = stream.read(chunk_size)
                             data = data.squeeze()
@@ -97,7 +96,6 @@ def main():
                             speech_segments = vad_iterator(data)
                             if speech_segments is not None and 'start' in speech_segments:
                                 in_speech = True
-                                speech_start = current_frame
                                 # add some silence
                                 buffer.extend(np.zeros(chunk_size) for _ in range(3))
                                 # add a bit of pre-padding of original audio
@@ -115,8 +113,7 @@ def main():
 
                                 # TODO: remove non-speech from the end
 
-                                num_speech_chunks = (current_frame - speech_start) // chunk_size
-                                chunk = np.concatenate(list(buffer)[-num_speech_chunks:])
+                                chunk = np.concatenate(buffer)
 
                                 filename = f"chunks/{current_frame:08d}.wav"
                                 write(filename, SAMPLE_RATE, chunk.reshape((chunk.shape[0], 1)))
