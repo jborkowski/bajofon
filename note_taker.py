@@ -1,7 +1,7 @@
 import sounddevice as sd
 from scipy.io.wavfile import write
 import numpy as np
-from transformers import pipeline
+from transformers import pipeline, WhisperProcessor, WhisperForConditionalGeneration
 import datetime
 import os
 import time
@@ -48,15 +48,8 @@ def main():
     print(f"Using device: {device.upper()} with data type: {torch_dtype}")
 
     print("Loading the Whisper model...")
-    # Load the model once at the beginning
-    transcriber = pipeline(
-        "automatic-speech-recognition",
-        model=MODEL_NAME,
-        device=device,
-        dtype=torch_dtype,
-        chunk_length_s=SAMPLE_RATE,
-        ignore_warning=True,
-    )
+    processor = WhisperProcessor.from_pretrained(MODEL_NAME)
+    model = WhisperForConditionalGeneration.from_pretrained(MODEL_NAME, dtype=torch_dtype).to(device)
     print("Model loaded. Ready to take notes.")
 
     vad = load_silero_vad()
@@ -86,27 +79,35 @@ def main():
             try:
                 with open(session_filename, "a"):
                     with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=np.float32) as stream:
-                        def chunk_generator():
-                            buffer = []
-                            while not stream.closed:
-                                data, _ = stream.read(5 * SAMPLE_RATE)
-                                data = data.squeeze()
-                                buffer.append(data)
-                                print(data)
-                                timestamps = get_speech_timestamps(data, vad)
-                                print(timestamps)
-                                yield data
+                        buffer = []
+                        while not stream.closed:
+                            data, _ = stream.read(int(0.5 * SAMPLE_RATE))
+                            data = data.squeeze()
+                            buffer.append(data)
+                            if len(buffer) > 30:
+                                buffer = buffer[-30:]
 
-                        results = transcriber(
-                            chunk_generator(), # type: ignore
-                            generate_kwargs={
-                                "language": language,
-                                "task": "transcribe",
-                            },
-                        )
+                            chunk = np.concatenate(buffer)
+                            print(f"produced a chunk: {chunk.shape}")
 
-                        for result in results:
-                            print(result)
+                            inputs = processor(chunk, sampling_rate=SAMPLE_RATE, return_tensors="pt").to(device, dtype=torch_dtype)
+
+                            # run generate with forced start tokens
+                            with torch.no_grad():
+                                generated_ids = model.generate(
+                                        **inputs,
+                                        #   decoder_input_ids=prompt_ids
+                                        return_timestamps=True
+                                        )
+
+                            tokens = generated_ids[0].tolist()
+                            decoded = processor.tokenizer.convert_ids_to_tokens(tokens)
+                            print(decoded)
+                         
+                            # decode to text
+                            text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+                            print(text)
 
 
             except KeyboardInterrupt:

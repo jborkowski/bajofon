@@ -3,3 +3,4 @@ torch
 sounddevice
 scipy
 numpy
+silero-vad
