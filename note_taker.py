@@ -7,6 +7,7 @@ import os
 import time
 import torch
 import traceback
+from collections import deque
 
 from silero_vad import load_silero_vad, VADIterator
 
@@ -80,29 +81,43 @@ def main():
                 with open(session_filename, "a"):
                     with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=np.float32) as stream:
                         vad_iterator = VADIterator(vad, sampling_rate=16000, threshold=0.3)
-                        buffer = []
-                        in_speech = False
                         chunk_size = 512
                         max_chunks_for_whisper = SAMPLE_RATE * 30 // chunk_size
+
+                        buffer = deque(maxlen=max_chunks_for_whisper)
+                        prepad_buffer = deque(maxlen=SAMPLE_RATE // chunk_size)
+                        in_speech = False
+
+                        current_frame = 0
                         while not stream.closed:
                             data, _ = stream.read(chunk_size)
                             data = data.squeeze()
 
                             speech_segments = vad_iterator(data)
                             if speech_segments is not None and 'start' in speech_segments:
-                                # TODO: add a bit of pre-padding
                                 in_speech = True
+                                # add some silence
+                                buffer.extend(np.zeros(chunk_size) for _ in range(3))
+                                # add a bit of pre-padding of original audio
+                                buffer.append(prepad_buffer[-1])
 
                             if in_speech:
                                 buffer.append(data)
-                                if len(buffer) > max_chunks_for_whisper:
-                                    buffer = buffer[-max_chunks_for_whisper:]
+                            else:
+                                prepad_buffer.append(data)
+
+                            current_frame += data.shape[0]
 
                             if speech_segments is not None and 'end' in speech_segments:
+                                in_speech = False
+
                                 # TODO: remove non-speech from the end
 
                                 chunk = np.concatenate(buffer)
-                                print(f"produced a chunk: {chunk.shape}")
+
+                                filename = f"chunks/{current_frame:08d}.wav"
+                                write(filename, SAMPLE_RATE, chunk.reshape((chunk.shape[0], 1)))
+                                print(f"produced a chunk: {chunk.shape} {filename}")
 
                                 inputs = processor(chunk, sampling_rate=SAMPLE_RATE, return_tensors="pt").to(device, dtype=torch_dtype)
 
