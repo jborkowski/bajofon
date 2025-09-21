@@ -16,25 +16,41 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 # load model in 4-bit
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
-    device=device,
+    device_map='auto',
     load_in_4bit=True,
     torch_dtype=torch.float16
 )
 
 print("model loaded")
 
-prompt = """Rewrite the following audio transcript into a well-formatted document with paragraphs, headings, and punctuation.
-DO NOT make up any new text in paragraphs, only change formatting. But you can invent heading names. Retain original language, DO NOT TRANSLATE.
+messages = [
+    {"role": "system", "content": """
+You are an expert editor. Rewrite the following Polish transcript into a clean, readable document:
+- Keep all text in Polish
+- Add proper punctuation and capitalization
+- Remove fillers like "Hmmm" and "Ummm"
+- Insert paragraphs and headings if appropriate (Markdown syntax, heading names in Polish)
+     """,},
+    {"role": "user", "content": open("output.srt").read()},
+ ]
 
-Original transcript:
+messages = [
+    {"role": "system", "content": """
+     Jesteś ekspertem w edycji tekstu. Przekształć poniższy zapis rozmowy w czytelny dokument:
+- Zachowaj język polski
+- Dodaj interpunkcję i wielkie litery
+- Wstaw akapity i nagłówki tam, gdzie to stosowne
+     """,},
+    {"role": "user", "content": open("output.srt").read()},
+ ]
 
-    """ + open("output.srt").read() + "\n\nRewritten transcript:\n\n"
+inputs = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True, return_tensors="pt").to(device)
 
-inputs = tokenizer(prompt, return_tensors="pt").to(device)
+print(tokenizer.decode(inputs[0]))
 
 with torch.no_grad():
     output_ids = model.generate(
-        **inputs,
+        inputs,
         max_new_tokens=500,
         do_sample=False  # greedy decoding for deterministic output
     )
