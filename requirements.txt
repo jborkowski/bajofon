@@ -4,3 +4,6 @@ sounddevice
 scipy
 numpy
 silero-vad
+sentencepiece
+accelerate
+bitsandbytes
