@@ -1,5 +1,4 @@
 import sounddevice as sd
-from scipy.io.wavfile import write
 import numpy as np
 from transformers import pipeline, WhisperProcessor, WhisperForConditionalGeneration
 import datetime
@@ -11,6 +10,8 @@ import fire
 from contextlib import ExitStack
 import soundfile
 import json
+from dataclasses import dataclass
+from typing import Optional
 
 from silero_vad import load_silero_vad, VADIterator
 
@@ -37,8 +38,12 @@ def get_language_choice():
                 f"Invalid language. Please choose from: {', '.join(SUPPORTED_LANGUAGES)}"
             )
 
+@dataclass
+class SpeechSegment:
+    start_frame: int
+    chunks: list[np.ndarray]
 
-def main(filename=None, language='en'):
+def main(filename=None, input_audio_file=None, language='en'):
     """Main function to run the real-time note-taking application."""
 
     # --- Device and Data Type Configuration ---
@@ -59,8 +64,6 @@ def main(filename=None, language='en'):
     print("Model loaded. Ready to take notes.")
 
     vad = load_silero_vad()
-
-    
 
     try:
 
@@ -93,6 +96,7 @@ def main(filename=None, language='en'):
 
             def log(message: dict):
                 message['time'] = datetime.datetime.now().isoformat()
+                print(json.dumps(message))
                 log_output.write(f"{json.dumps(message)}\n")
                 log_output.flush()
 
@@ -105,11 +109,9 @@ def main(filename=None, language='en'):
             vad_iterator = VADIterator(vad, sampling_rate=16000, threshold=0.3, min_silence_duration_ms=int(min_silence_duration * 1000))
             max_chunks_for_whisper = SAMPLE_RATE * 30 // chunk_size
 
-            buffer = deque(maxlen=max_chunks_for_whisper)
             prepad_buffer = deque(maxlen=SAMPLE_RATE // chunk_size)
-            in_speech = False
-
-            num_speech_chunks = 0
+            current_speech_segment: Optional[SpeechSegment] = None
+            speech_segments = deque()
 
             while not mic_stream.closed:
                 data, _ = mic_stream.read(chunk_size)
@@ -117,68 +119,67 @@ def main(filename=None, language='en'):
 
                 original_audio_output.write(data)
 
-                speech_segments = vad_iterator(data)
-                if speech_segments is not None and 'start' in speech_segments:
+                vad_result = vad_iterator(data)
+                if vad_result is not None and 'start' in vad_result:
                     log({"event": "speech_start", "start_frame": current_frame})
-                    speech_start_frame = current_frame
-                    in_speech = True
-                    num_speech_chunks = 0
+                    current_speech_segment = SpeechSegment(start_frame=current_frame, chunks=[])
+
                     # add a bit of pre-padding of original audio
                     if len(prepad_buffer) > 0:
                         num_prepad_chunks = min(5, len(prepad_buffer))
-                        for chunk in list(prepad_buffer)[-num_prepad_chunks:]:
-                            buffer.append(chunk)
-                            voice_audio_output.write(chunk)
-                            voice_audio_current_frame += chunk_size
-                            num_speech_chunks += 1
+                        current_speech_segment.chunks.extend(list(prepad_buffer)[-num_prepad_chunks:])
 
-                if in_speech:
-                    buffer.append(data)
-                    voice_audio_output.write(data)
-                    voice_audio_current_frame += chunk_size
-                    num_speech_chunks += 1
+
+                if current_speech_segment is not None:
+                    current_speech_segment.chunks.append(data)
                 else:
                     prepad_buffer.append(data)
 
                 current_frame += data.shape[0]
 
-                if speech_segments is not None and 'end' in speech_segments:
+                if current_speech_segment is not None and vad_result is not None and 'end' in vad_result:
                     log({"event": "speech_end", "end_frame": current_frame})
-                    in_speech = False
 
                     # TODO: remove non-speech from the end
                     # TODO: handle speech chunks longer than 30 seconds
 
                     # add some silence
-                    for _ in range(min_silence_chunks):
-                        buffer.append(np.zeros(chunk_size))
-                        voice_audio_output.write(np.zeros(chunk_size))
-                        voice_audio_current_frame += chunk_size
+                    current_speech_segment.chunks.extend([np.zeros(chunk_size) for _ in range(min_silence_chunks)])
+                    speech_segments.append(current_speech_segment)
+                    voice_audio_output.write(np.concatenate(current_speech_segment.chunks))
+                    voice_audio_current_frame += sum(len(s) for s in current_speech_segment.chunks)
+                    current_speech_segment = None
 
-                    chunk = np.concatenate(buffer)
+                    while sum(len(s.chunks) for s in speech_segments) > max_chunks_for_whisper:
+                        segment = speech_segments.popleft()
+                        log({"event": "segment_dropped", "start_frame": segment.start_frame, "num_chunks": len(segment.chunks)})
+
+                    chunk = np.concatenate([s for s in speech_segments for s in s.chunks])
 
                     inputs = processor(chunk, sampling_rate=SAMPLE_RATE, return_tensors="pt", return_attention_mask=True).to(device, dtype=torch_dtype)
-                    print(inputs.keys())
 
                     # run generate with forced start tokens
                     with torch.no_grad():
-                        generated_ids = model.generate(
+                        result = model.generate(
                             **inputs,
                             task="transcribe",
                             language=language,
-                            return_timestamps=True
+                            return_dict_in_generate=True,
+                            return_timestamps=True,
+                            return_token_timestamps=True,
                         )
 
-                    tokens = generated_ids[0].tolist()
-                    decoded = processor.tokenizer.convert_ids_to_tokens(tokens)
+                    print(list(result.keys()))
 
-                    print(''.join(decoded).replace('Ġ', ' '))
+                    generated_ids = result["sequences"]
                  
                     # decode to text
-                    text = processor.batch_decode(generated_ids, skip_special_tokens=False, decode_with_timestamps=True, language=language)[0]
+                    text = processor.batch_decode(generated_ids, skip_special_tokens=True, language=language)[0]
 
+                    print()
                     print(text)
-                    log({"event": "transcription", "text": text, "decoded": decoded, "text": text})
+                    print(result["token_timestamps"])
+                    log({"event": "transcription", "text": text})
 
                     note_output.write(f"{text}\n")
                     note_output.flush()
