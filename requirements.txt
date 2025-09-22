@@ -1,6 +1,8 @@
 transformers
 torch
 sounddevice
+soundfile
 scipy
 numpy
 silero-vad
+fire

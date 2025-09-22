@@ -4,10 +4,13 @@ import numpy as np
 from transformers import pipeline, WhisperProcessor, WhisperForConditionalGeneration
 import datetime
 import os
-import time
 import torch
 import traceback
 from collections import deque
+import fire
+from contextlib import ExitStack
+import soundfile
+import json
 
 from silero_vad import load_silero_vad, VADIterator
 
@@ -19,6 +22,8 @@ CHANNELS = 1
 CHUNK_SECONDS = 30  # Duration of each audio chunk in seconds
 OUTPUT_DIR = "notes"
 SUPPORTED_LANGUAGES = {"pl", "en", "es"}
+
+RECORDINGS_DIR = "recordings"
 
 
 def get_language_choice():
@@ -33,7 +38,7 @@ def get_language_choice():
             )
 
 
-def main():
+def main(filename=None, language='en'):
     """Main function to run the real-time note-taking application."""
 
     # --- Device and Data Type Configuration ---
@@ -55,97 +60,115 @@ def main():
 
     vad = load_silero_vad()
 
+    
+
     try:
-        while True:
-            # input("\nPress Enter to start a new note session (or Ctrl+C to exit)...")
 
-            #language = get_language_choice()
-            language = 'pl'
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        recording_dir = f"{RECORDINGS_DIR}/{timestamp}"
+        os.makedirs(recording_dir, exist_ok=True)
+
+        if filename is None:
             # --- Create a new note file for the session ---
-            if not os.path.exists(OUTPUT_DIR):
-                os.makedirs(OUTPUT_DIR)
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            session_filename = os.path.join(
+            filename = os.path.join(
                 OUTPUT_DIR, f"note_{timestamp}_{language}.txt"
             )
 
-            print(
-                f"\nNew note session started. Language: {language.upper()}. Saving to: {session_filename}"
-            )
-            print(
-                f"Recording in {CHUNK_SECONDS}-second chunks... Press Ctrl+C to stop and save."
-            )
+        print(f"\nNew note session started. Language: {language.upper()}. Saving to: {filename}")
+        print(f"Recording... Press Ctrl+C to stop and save.")
 
-            try:
-                with open(session_filename, "a"):
-                    with sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=np.float32) as stream:
-                        vad_iterator = VADIterator(vad, sampling_rate=16000, threshold=0.3)
-                        chunk_size = 512
-                        max_chunks_for_whisper = SAMPLE_RATE * 30 // chunk_size
+        print(f"Debug files at: {recording_dir}")
 
-                        buffer = deque(maxlen=max_chunks_for_whisper)
-                        prepad_buffer = deque(maxlen=SAMPLE_RATE // chunk_size)
-                        in_speech = False
+        with ExitStack() as stack:
+            note_output = stack.enter_context(open(filename, "a"))
+            mic_stream = stack.enter_context(sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=np.float32))
+            original_audio_output = soundfile.SoundFile(f"{recording_dir}/original.flac", mode='w', samplerate=SAMPLE_RATE, channels=CHANNELS, format='FLAC')
+            voice_audio_output = soundfile.SoundFile(f"{recording_dir}/voice.flac", mode='w', samplerate=SAMPLE_RATE, channels=CHANNELS, format='FLAC')
+            voice_audio_current_frame = 0
+            log_output = stack.enter_context(open(f"{recording_dir}/log.jsonl", "w"))
 
-                        current_frame = 0
-                        while not stream.closed:
-                            data, _ = stream.read(chunk_size)
-                            data = data.squeeze()
+            current_frame = 0
 
-                            speech_segments = vad_iterator(data)
-                            if speech_segments is not None and 'start' in speech_segments:
-                                in_speech = True
-                                # add some silence
-                                buffer.extend(np.zeros(chunk_size) for _ in range(3))
-                                # add a bit of pre-padding of original audio
-                                buffer.append(prepad_buffer[-1])
+            def log(message: dict):
+                message['time'] = datetime.datetime.now().isoformat()
+                log_output.write(f"{json.dumps(message)}\n")
+                log_output.flush()
 
-                            if in_speech:
-                                buffer.append(data)
-                            else:
-                                prepad_buffer.append(data)
+            log({"event": "start", "language": language, "model": MODEL_NAME, "filename": filename})
 
-                            current_frame += data.shape[0]
+            vad_iterator = VADIterator(vad, sampling_rate=16000, threshold=0.3)
+            chunk_size = 512
+            max_chunks_for_whisper = SAMPLE_RATE * 30 // chunk_size
 
-                            if speech_segments is not None and 'end' in speech_segments:
-                                in_speech = False
+            buffer = deque(maxlen=max_chunks_for_whisper)
+            prepad_buffer = deque(maxlen=SAMPLE_RATE // chunk_size)
+            in_speech = False
 
-                                # TODO: remove non-speech from the end
+            while not mic_stream.closed:
+                data, _ = mic_stream.read(chunk_size)
+                data = data.squeeze()
 
-                                chunk = np.concatenate(buffer)
+                original_audio_output.write(data)
 
-                                filename = f"chunks/{current_frame:08d}.wav"
-                                write(filename, SAMPLE_RATE, chunk.reshape((chunk.shape[0], 1)))
-                                print(f"produced a chunk: {chunk.shape} {filename}")
+                speech_segments = vad_iterator(data)
+                if speech_segments is not None and 'start' in speech_segments:
+                    log({"event": "speech_start", "start_frame": current_frame})
+                    in_speech = True
+                    # add a bit of pre-padding of original audio
+                    if len(prepad_buffer) > 0:
+                        buffer.append(prepad_buffer[-1])
+                        voice_audio_output.write(prepad_buffer[-1])
+                        voice_audio_current_frame += chunk_size
 
-                                inputs = processor(chunk, sampling_rate=SAMPLE_RATE, return_tensors="pt").to(device, dtype=torch_dtype)
+                if in_speech:
+                    buffer.append(data)
+                    voice_audio_output.write(data)
+                    voice_audio_current_frame += chunk_size
+                else:
+                    prepad_buffer.append(data)
 
-                                # run generate with forced start tokens
-                                with torch.no_grad():
-                                    generated_ids = model.generate(
-                                            **inputs,
-                                            #   decoder_input_ids=prompt_ids
-                                            return_timestamps=True
-                                            )
+                current_frame += data.shape[0]
 
-                                tokens = generated_ids[0].tolist()
-                                decoded = processor.tokenizer.convert_ids_to_tokens(tokens)
-                                print(decoded)
-                             
-                                # decode to text
-                                text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+                if speech_segments is not None and 'end' in speech_segments:
+                    log({"event": "speech_end", "end_frame": current_frame})
+                    in_speech = False
 
-                                print(text)
+                    # add some silence
+                    for _ in range(3):
+                        buffer.append(np.zeros(chunk_size))
+                        voice_audio_output.write(np.zeros(chunk_size))
+                        voice_audio_current_frame += chunk_size
 
+                    # TODO: remove non-speech from the end
+                    # TODO: handle speech chunks longer than 30 seconds
 
-            except KeyboardInterrupt:
-                print(
-                    f"\n\nNote session finished. Your note is saved in {session_filename}"
-                )
-                print("--------------------------------------------------")
-                raise
-                pass
+                    chunk = np.concatenate(buffer)
+
+                    inputs = processor(chunk, sampling_rate=SAMPLE_RATE, return_tensors="pt").to(device, dtype=torch_dtype)
+
+                    # run generate with forced start tokens
+                    with torch.no_grad():
+                        generated_ids = model.generate(
+                            **inputs,
+                            task="transcribe",
+                            language=language,
+                            return_timestamps=True
+                        )
+
+                    tokens = generated_ids[0].tolist()
+                    decoded = processor.tokenizer.convert_ids_to_tokens(tokens)
+                 
+                    # decode to text
+                    text = processor.batch_decode(generated_ids, skip_special_tokens=True, language=language)[0]
+
+                    print(text)
+                    log({"event": "transcription", "text": text, "decoded": decoded, "text": text})
+
+                    note_output.write(f"{text}\n")
+                    note_output.flush()
+
 
     except KeyboardInterrupt:
         print("\nExiting note taker. Goodbye!")
@@ -155,4 +178,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    fire.Fire(main)
