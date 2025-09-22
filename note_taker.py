@@ -12,6 +12,7 @@ import soundfile
 import json
 from dataclasses import dataclass
 from typing import Optional
+import spacy
 
 from silero_vad import load_silero_vad, VADIterator
 
@@ -42,6 +43,29 @@ def get_language_choice():
 class SpeechSegment:
     start_frame: int
     chunks: list[np.ndarray]
+    transcriptions: list[str]
+
+    def duration_seconds(self):
+        return sum(len(c) for c in self.chunks) / SAMPLE_RATE
+
+    def best_transcription(self) -> str:
+        if len(self.transcriptions) == 0:
+            return ""
+
+        # return the last one
+        return self.transcriptions[-1]
+
+        # # count occurrences of each transcription
+        # counts = {}
+        # for t in self.transcriptions:
+        #     t = t.strip()
+        #     if t == "":
+        #         continue
+        #     if t not in counts:
+        #         counts[t] = 0
+        #     counts[t] += 1
+        # # return the most common transcription
+        # return max(counts.items(), key=lambda x: x[1])[0]
 
 def main(filename=None, input_audio_file=None, language='en'):
     """Main function to run the real-time note-taking application."""
@@ -65,54 +89,69 @@ def main(filename=None, input_audio_file=None, language='en'):
 
     vad = load_silero_vad()
 
-    try:
+    nlp = spacy.load("en_core_web_sm")
 
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        recording_dir = f"{RECORDINGS_DIR}/{timestamp}"
-        os.makedirs(recording_dir, exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-        if filename is None:
-            # --- Create a new note file for the session ---
-            filename = os.path.join(
-                OUTPUT_DIR, f"note_{timestamp}_{language}.txt"
-            )
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    recording_dir = f"{RECORDINGS_DIR}/{timestamp}"
+    os.makedirs(recording_dir, exist_ok=True)
 
-        print(f"\nNew note session started. Language: {language.upper()}. Saving to: {filename}")
-        print(f"Recording... Press Ctrl+C to stop and save.")
+    if filename is None:
+        # --- Create a new note file for the session ---
+        filename = os.path.join(
+            OUTPUT_DIR, f"note_{timestamp}_{language}.txt"
+        )
 
-        print(f"Debug files at: {recording_dir}")
+    print(f"\nNew note session started. Language: {language.upper()}. Saving to: {filename}")
+    print(f"Recording... Press Ctrl+C to stop and save.")
 
-        with ExitStack() as stack:
-            note_output = stack.enter_context(open(filename, "a"))
-            mic_stream = stack.enter_context(sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=np.float32))
-            original_audio_output = soundfile.SoundFile(f"{recording_dir}/original.flac", mode='w', samplerate=SAMPLE_RATE, channels=CHANNELS, format='FLAC')
-            voice_audio_output = soundfile.SoundFile(f"{recording_dir}/voice.flac", mode='w', samplerate=SAMPLE_RATE, channels=CHANNELS, format='FLAC')
-            voice_audio_current_frame = 0
-            log_output = stack.enter_context(open(f"{recording_dir}/log.jsonl", "w"))
+    print(f"Debug files at: {recording_dir}")
 
-            current_frame = 0
+    with ExitStack() as stack:
+        note_output = stack.enter_context(open(filename, "a"))
+        mic_stream = stack.enter_context(sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=np.float32))
+        original_audio_output = soundfile.SoundFile(f"{recording_dir}/original.flac", mode='w', samplerate=SAMPLE_RATE, channels=CHANNELS, format='FLAC')
+        voice_audio_output = soundfile.SoundFile(f"{recording_dir}/voice.flac", mode='w', samplerate=SAMPLE_RATE, channels=CHANNELS, format='FLAC')
+        voice_audio_current_frame = 0
+        log_output = stack.enter_context(open(f"{recording_dir}/log.jsonl", "w"))
 
-            def log(message: dict):
-                message['time'] = datetime.datetime.now().isoformat()
-                print(json.dumps(message))
-                log_output.write(f"{json.dumps(message)}\n")
-                log_output.flush()
+        current_frame = 0
 
-            log({"event": "start", "language": language, "model": MODEL_NAME, "filename": filename})
+        def log(message: dict):
+            message['time'] = datetime.datetime.now().isoformat()
+            print(json.dumps(message))
+            log_output.write(f"{json.dumps(message)}\n")
+            log_output.flush()
 
-            chunk_size = 512
-            min_silence_duration = 0.5  # seconds
-            min_silence_chunks = int(min_silence_duration * SAMPLE_RATE / chunk_size)
+        log({"event": "start", "language": language, "model": MODEL_NAME, "filename": filename})
 
-            vad_iterator = VADIterator(vad, sampling_rate=16000, threshold=0.3, min_silence_duration_ms=int(min_silence_duration * 1000))
-            max_chunks_for_whisper = SAMPLE_RATE * 30 // chunk_size
+        chunk_size = 512
+        min_silence_duration = 0.5  # seconds
+        min_silence_chunks = int(min_silence_duration * SAMPLE_RATE / chunk_size)
 
-            prepad_buffer = deque(maxlen=SAMPLE_RATE // chunk_size)
-            current_speech_segment: Optional[SpeechSegment] = None
-            speech_segments = deque()
+        vad_iterator = VADIterator(vad, sampling_rate=16000, threshold=0.3, min_silence_duration_ms=int(min_silence_duration * 1000))
+        max_chunks_for_whisper = SAMPLE_RATE * 30 // chunk_size
 
+        prepad_buffer = deque(maxlen=SAMPLE_RATE // chunk_size)
+        current_speech_segment: Optional[SpeechSegment] = None
+        speech_segments = deque()
+
+        def drop_segment(segment: SpeechSegment):
+            chosen_transcription = segment.best_transcription()
+
+            if chosen_transcription.strip().endswith(('.', '!', '?')):
+                chosen_transcription += "\n"
+
+            print(f"OUT: {chosen_transcription}")
+
+            note_output.write(f"{chosen_transcription}")
+            note_output.flush()
+
+            log({"event": "segment_dropped", "start_frame": segment.start_frame, "num_chunks": len(segment.chunks), "transcriptions": segment.transcriptions, "chosen_transcription": chosen_transcription})
+        
+        try:
             while not mic_stream.closed:
                 data, _ = mic_stream.read(chunk_size)
                 data = data.squeeze()
@@ -122,13 +161,12 @@ def main(filename=None, input_audio_file=None, language='en'):
                 vad_result = vad_iterator(data)
                 if vad_result is not None and 'start' in vad_result:
                     log({"event": "speech_start", "start_frame": current_frame})
-                    current_speech_segment = SpeechSegment(start_frame=current_frame, chunks=[])
+                    current_speech_segment = SpeechSegment(start_frame=current_frame, chunks=[], transcriptions=[])
 
                     # add a bit of pre-padding of original audio
                     if len(prepad_buffer) > 0:
                         num_prepad_chunks = min(5, len(prepad_buffer))
                         current_speech_segment.chunks.extend(list(prepad_buffer)[-num_prepad_chunks:])
-
 
                 if current_speech_segment is not None:
                     current_speech_segment.chunks.append(data)
@@ -152,7 +190,7 @@ def main(filename=None, input_audio_file=None, language='en'):
 
                     while sum(len(s.chunks) for s in speech_segments) > max_chunks_for_whisper:
                         segment = speech_segments.popleft()
-                        log({"event": "segment_dropped", "start_frame": segment.start_frame, "num_chunks": len(segment.chunks)})
+                        drop_segment(segment)
 
                     chunk = np.concatenate([s for s in speech_segments for s in s.chunks])
 
@@ -169,27 +207,53 @@ def main(filename=None, input_audio_file=None, language='en'):
                             return_token_timestamps=True,
                         )
 
-                    print(list(result.keys()))
-
                     generated_ids = result["sequences"]
+
+                    tokens = generated_ids[0].tolist()
+                    decoded = processor.tokenizer.convert_ids_to_tokens(tokens)
+
+                    speech_segment_index = 0
+                    speech_segment_start_timestamp = 0.0
+                    text_so_far = ""
+
+                    for token_str, timestamp in zip(decoded, result["token_timestamps"][0]):
+                        token_str = token_str.replace("Ġ", " ")
+
+                        # filter out special tokens `<|...|>`
+                        if token_str.startswith("<|") and token_str.endswith("|>"):
+                            continue
+
+                        speech_segment = speech_segments[speech_segment_index]
+
+                        if timestamp > speech_segment_start_timestamp + speech_segment.duration_seconds() and speech_segment_index + 1 < len(speech_segments):
+                            speech_segment.transcriptions.append(text_so_far)
+                            text_so_far = ""
+                            speech_segment_index += 1
+                            speech_segment_start_timestamp = timestamp
+
+                        text_so_far += token_str
+
+                    if text_so_far.strip() != "":
+                        speech_segments[speech_segment_index].transcriptions.append(text_so_far)
+
+                    print("Segment buffer:")
+                    print()
+                    for s in speech_segments:
+                        print(f"Segment starting at {s.start_frame / SAMPLE_RATE:.2f}s, duration {s.duration_seconds():.2f}s:")
+                        for t in s.transcriptions:
+                            print(f" - {t}")
                  
                     # decode to text
                     text = processor.batch_decode(generated_ids, skip_special_tokens=True, language=language)[0]
-
-                    print()
-                    print(text)
-                    print(result["token_timestamps"])
                     log({"event": "transcription", "text": text})
 
-                    note_output.write(f"{text}\n")
-                    note_output.flush()
 
+        except KeyboardInterrupt:
+            print("\nExiting note taker. Goodbye!")
 
-    except KeyboardInterrupt:
-        print("\nExiting note taker. Goodbye!")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        traceback.print_exc()
+            while len(speech_segments) > 0:
+                segment = speech_segments.popleft()
+                drop_segment(segment)
 
 
 if __name__ == "__main__":
