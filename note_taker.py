@@ -149,7 +149,7 @@ def main(filename=None, input_audio_file=None, language='en'):
             for cs in custom_input_segments:
                 if segment.start_frame > cs.frame:
                     log({"event": "custom_input_attached", "frame": cs.frame, "content": cs.content})
-                    note_output.write(f"\n{cs.content}\n")
+                    note_output.write(f"{cs.content}\n")
                     custom_input_segments_to_drop += 1
 
             for _ in range(custom_input_segments_to_drop):
@@ -292,7 +292,7 @@ def main(filename=None, input_audio_file=None, language='en'):
                 drop_segment(segment)
                 for cs in custom_input_segments:
                     log({"event": "custom_input_attached", "frame": cs.frame, "content": cs.content})
-                    note_output.write(f"\n{cs.content}\n")
+                    note_output.write(f"{cs.content}\n")
 
 
 if __name__ == "__main__":
