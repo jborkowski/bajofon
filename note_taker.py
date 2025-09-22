@@ -13,6 +13,7 @@ import json
 from dataclasses import dataclass
 from typing import Optional
 import spacy
+import threading
 
 from silero_vad import load_silero_vad, VADIterator
 
@@ -67,6 +68,11 @@ class SpeechSegment:
         # # return the most common transcription
         # return max(counts.items(), key=lambda x: x[1])[0]
 
+@dataclass
+class CustomInputSegment:
+    frame: int
+    content: str
+
 def main(filename=None, input_audio_file=None, language='en'):
     """Main function to run the real-time note-taking application."""
 
@@ -89,8 +95,7 @@ def main(filename=None, input_audio_file=None, language='en'):
 
     vad = load_silero_vad()
 
-    nlp = spacy.load("en_core_web_sm")
-
+    # nlp = spacy.load("en_core_web_sm")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -137,8 +142,20 @@ def main(filename=None, input_audio_file=None, language='en'):
         prepad_buffer = deque(maxlen=SAMPLE_RATE // chunk_size)
         current_speech_segment: Optional[SpeechSegment] = None
         speech_segments = deque()
+        custom_input_segments = deque()
 
         def drop_segment(segment: SpeechSegment):
+            custom_input_segments_to_drop = 0
+            for cs in custom_input_segments:
+                if segment.start_frame > cs.frame:
+                    log({"event": "custom_input_attached", "frame": cs.frame, "content": cs.content})
+                    note_output.write(f"\n{cs.content}\n")
+                    custom_input_segments_to_drop += 1
+
+            for _ in range(custom_input_segments_to_drop):
+                custom_input_segments.popleft()
+
+
             chosen_transcription = segment.best_transcription()
 
             if chosen_transcription.strip().endswith(('.', '!', '?')):
@@ -150,7 +167,18 @@ def main(filename=None, input_audio_file=None, language='en'):
             note_output.flush()
 
             log({"event": "segment_dropped", "start_frame": segment.start_frame, "num_chunks": len(segment.chunks), "transcriptions": segment.transcriptions, "chosen_transcription": chosen_transcription})
+
+        input_queue_mutex = threading.Lock()
+        input_queue = deque()
+
+        def custom_input_loop():
+            while True:
+                user_input = input()
+                with input_queue_mutex:
+                    input_queue.append(user_input)
         
+        threading.Thread(target=custom_input_loop, daemon=True).start()
+
         try:
             while not mic_stream.closed:
                 data, _ = mic_stream.read(chunk_size)
@@ -172,6 +200,14 @@ def main(filename=None, input_audio_file=None, language='en'):
                     current_speech_segment.chunks.append(data)
                 else:
                     prepad_buffer.append(data)
+
+                with input_queue_mutex:
+                    while len(input_queue) > 0:
+                        user_input = input_queue.popleft()
+                        if user_input.strip() != "":
+                            log({"event": "custom_input", "frame": current_frame, "content": user_input})
+                            custom_segment = CustomInputSegment(frame=current_frame, content=user_input)
+                            custom_input_segments.append(custom_segment)
 
                 current_frame += data.shape[0]
 
@@ -254,6 +290,9 @@ def main(filename=None, input_audio_file=None, language='en'):
             while len(speech_segments) > 0:
                 segment = speech_segments.popleft()
                 drop_segment(segment)
+                for cs in custom_input_segments:
+                    log({"event": "custom_input_attached", "frame": cs.frame, "content": cs.content})
+                    note_output.write(f"\n{cs.content}\n")
 
 
 if __name__ == "__main__":
