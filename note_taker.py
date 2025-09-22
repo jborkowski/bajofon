@@ -98,8 +98,11 @@ def main(filename=None, language='en'):
 
             log({"event": "start", "language": language, "model": MODEL_NAME, "filename": filename})
 
-            vad_iterator = VADIterator(vad, sampling_rate=16000, threshold=0.3)
             chunk_size = 512
+            min_silence_duration = 0.5  # seconds
+            min_silence_chunks = int(min_silence_duration * SAMPLE_RATE / chunk_size)
+
+            vad_iterator = VADIterator(vad, sampling_rate=16000, threshold=0.3, min_silence_duration_ms=int(min_silence_duration * 1000))
             max_chunks_for_whisper = SAMPLE_RATE * 30 // chunk_size
 
             buffer = deque(maxlen=max_chunks_for_whisper)
@@ -118,9 +121,11 @@ def main(filename=None, language='en'):
                     in_speech = True
                     # add a bit of pre-padding of original audio
                     if len(prepad_buffer) > 0:
-                        buffer.append(prepad_buffer[-1])
-                        voice_audio_output.write(prepad_buffer[-1])
-                        voice_audio_current_frame += chunk_size
+                        num_prepad_chunks = min(5, len(prepad_buffer))
+                        for chunk in list(prepad_buffer)[-num_prepad_chunks:]:
+                            buffer.append(chunk)
+                            voice_audio_output.write(chunk)
+                            voice_audio_current_frame += chunk_size
 
                 if in_speech:
                     buffer.append(data)
@@ -135,18 +140,18 @@ def main(filename=None, language='en'):
                     log({"event": "speech_end", "end_frame": current_frame})
                     in_speech = False
 
-                    # add some silence
-                    for _ in range(3):
-                        buffer.append(np.zeros(chunk_size))
-                        voice_audio_output.write(np.zeros(chunk_size))
-                        voice_audio_current_frame += chunk_size
-
                     # TODO: remove non-speech from the end
                     # TODO: handle speech chunks longer than 30 seconds
 
+                    # # add some silence
+                    # for _ in range(min_silence_chunks):
+                    #     buffer.append(np.zeros(chunk_size))
+                    #     voice_audio_output.write(np.zeros(chunk_size))
+                    #     voice_audio_current_frame += chunk_size
+
                     chunk = np.concatenate(buffer)
 
-                    inputs = processor(chunk, sampling_rate=SAMPLE_RATE, return_tensors="pt").to(device, dtype=torch_dtype)
+                    inputs = processor(chunk, sampling_rate=SAMPLE_RATE, return_tensors="pt", padding=True).to(device, dtype=torch_dtype)
 
                     # run generate with forced start tokens
                     with torch.no_grad():
@@ -159,6 +164,8 @@ def main(filename=None, language='en'):
 
                     tokens = generated_ids[0].tolist()
                     decoded = processor.tokenizer.convert_ids_to_tokens(tokens)
+
+                    print(decoded)
                  
                     # decode to text
                     text = processor.batch_decode(generated_ids, skip_special_tokens=True, language=language)[0]
