@@ -293,9 +293,9 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
             while len(speech_segments) > 0:
                 segment = speech_segments.popleft()
                 drop_segment(segment)
-                for cs in custom_input_segments:
-                    log({"event": "custom_input_attached", "frame": cs.frame, "content": cs.content})
-                    note_output.write(f"{cs.content}\n")
+            for cs in custom_input_segments:
+                log({"event": "custom_input_attached", "frame": cs.frame, "content": cs.content})
+                note_output.write(f"{cs.content}\n")
 
 
 if __name__ == "__main__":
