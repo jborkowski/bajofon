@@ -18,11 +18,12 @@ import threading
 from silero_vad import load_silero_vad, VADIterator
 
 # --- Configuration ---
-MODEL_NAME = "openai/whisper-medium"
-##MODEL_NAME = "openai/whisper-large-v3"
+DEFAULT_MODEL_NAME = "openai/whisper-medium"
+# other options:
+# "openai/whisper-large-v3"
+# "openai/whisper-large-v3-turbo"
 SAMPLE_RATE = 16000  # Whisper models are trained on 16kHz audio
 CHANNELS = 1
-CHUNK_SECONDS = 30  # Duration of each audio chunk in seconds
 OUTPUT_DIR = "notes"
 SUPPORTED_LANGUAGES = {"pl", "en", "es"}
 
@@ -56,6 +57,8 @@ class SpeechSegment:
         # return the last one
         return self.transcriptions[-1]
 
+        # The code below seems smart, but doesn't work that well:
+
         # # count occurrences of each transcription
         # counts = {}
         # for t in self.transcriptions:
@@ -73,7 +76,7 @@ class CustomInputSegment:
     frame: int
     content: str
 
-def main(filename=None, input_audio_file=None, language='en'):
+def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT_MODEL_NAME):
     """Main function to run the real-time note-taking application."""
 
     # --- Device and Data Type Configuration ---
@@ -89,8 +92,8 @@ def main(filename=None, input_audio_file=None, language='en'):
     print(f"Using device: {device.upper()} with data type: {torch_dtype}")
 
     print("Loading the Whisper model...")
-    processor = WhisperProcessor.from_pretrained(MODEL_NAME)
-    model = WhisperForConditionalGeneration.from_pretrained(MODEL_NAME, dtype=torch_dtype).to(device)
+    processor = WhisperProcessor.from_pretrained(model_name)
+    model = WhisperForConditionalGeneration.from_pretrained(model_name, dtype=torch_dtype).to(device)
     print("Model loaded. Ready to take notes.")
 
     vad = load_silero_vad()
@@ -130,7 +133,7 @@ def main(filename=None, input_audio_file=None, language='en'):
             log_output.write(f"{json.dumps(message)}\n")
             log_output.flush()
 
-        log({"event": "start", "language": language, "model": MODEL_NAME, "filename": filename})
+        log({"event": "start", "language": language, "model": model_name, "filename": filename})
 
         chunk_size = 512
         min_silence_duration = 0.5  # seconds
