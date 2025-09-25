@@ -253,11 +253,9 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
 
                     speech_segment_index = 0
                     speech_segment_start_timestamp = 0.0
-                    text_so_far = ""
+                    text_so_far = []
 
                     for token_str, timestamp in zip(decoded, result["token_timestamps"][0]):
-                        token_str = token_str.replace("Ġ", " ")
-
                         # filter out special tokens `<|...|>`
                         if token_str.startswith("<|") and token_str.endswith("|>"):
                             continue
@@ -265,15 +263,15 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
                         speech_segment = speech_segments[speech_segment_index]
 
                         if timestamp > speech_segment_start_timestamp + speech_segment.duration_seconds() and speech_segment_index + 1 < len(speech_segments):
-                            speech_segment.transcriptions.append(text_so_far)
-                            text_so_far = ""
+                            speech_segment.transcriptions.append(processor.tokenizer.convert_tokens_to_string(text_so_far))
+                            text_so_far = []
                             speech_segment_index += 1
                             speech_segment_start_timestamp = timestamp
 
-                        text_so_far += token_str
+                        text_so_far.append(token_str)
 
-                    if text_so_far.strip() != "":
-                        speech_segments[speech_segment_index].transcriptions.append(text_so_far)
+                    if len(text_so_far) > 0:
+                        speech_segments[speech_segment_index].transcriptions.append(processor.tokenizer.convert_tokens_to_string(text_so_far))
 
                     print("Segment buffer:")
                     print()
