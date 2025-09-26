@@ -1,0 +1,23 @@
+[project]
+name = "bajofon"
+version = "0.1.0"
+description = "Audio processing and note-taking application with AI transcription"
+requires-python = ">=3.11"
+dependencies = [
+    "transformers",
+    "torch",
+    "sounddevice",
+    "soundfile",
+    "scipy",
+    "numpy",
+    "silero-vad",
+    "fire",
+    "spacy>=3.8.7",
+]
+
+[project.optional-dependencies]
+llm = [
+    "accelerate",
+    "bitsandbytes; platform_machine != 'arm64' and sys_platform == 'linux'",
+    "sentencepiece",
+]
