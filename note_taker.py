@@ -103,7 +103,10 @@ class CustomInputSegment:
     frame: int
     content: str
 
-def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT_MODEL_NAME):
+
+def main(
+    filename=None, input_audio_file=None, language="en", model_name=DEFAULT_MODEL_NAME
+):
     """Main function to run the real-time note-taking application."""
 
     # --- Device and Data Type Configuration ---
@@ -120,7 +123,9 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
 
     print("Loading the Whisper model...")
     processor = WhisperProcessor.from_pretrained(model_name)
-    model = WhisperForConditionalGeneration.from_pretrained(model_name, dtype=torch_dtype).to(device)
+    model = WhisperForConditionalGeneration.from_pretrained(
+        model_name, dtype=torch_dtype
+    ).to(device)
     print("Model loaded. Ready to take notes.")
 
     vad = load_silero_vad()
@@ -135,20 +140,34 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
 
     if filename is None:
         # --- Create a new note file for the session ---
-        filename = os.path.join(
-            OUTPUT_DIR, f"note_{timestamp}_{language}.txt"
-        )
+        filename = os.path.join(OUTPUT_DIR, f"note_{timestamp}_{language}.txt")
 
-    print(f"\nNew note session started. Language: {language.upper()}. Saving to: {filename}")
+    print(
+        f"\nNew note session started. Language: {language.upper()}. Saving to: {filename}"
+    )
     print(f"Recording... Press Ctrl+C to stop and save.")
 
     print(f"Debug files at: {recording_dir}")
 
     with ExitStack() as stack:
         note_output = stack.enter_context(open(filename, "a"))
-        mic_stream = stack.enter_context(sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=np.float32))
-        original_audio_output = soundfile.SoundFile(f"{recording_dir}/original.flac", mode='w', samplerate=SAMPLE_RATE, channels=CHANNELS, format='FLAC')
-        voice_audio_output = soundfile.SoundFile(f"{recording_dir}/voice.flac", mode='w', samplerate=SAMPLE_RATE, channels=CHANNELS, format='FLAC')
+        mic_stream = stack.enter_context(
+            sd.InputStream(samplerate=SAMPLE_RATE, channels=CHANNELS, dtype=np.float32)
+        )
+        original_audio_output = soundfile.SoundFile(
+            f"{recording_dir}/original.flac",
+            mode="w",
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            format="FLAC",
+        )
+        voice_audio_output = soundfile.SoundFile(
+            f"{recording_dir}/voice.flac",
+            mode="w",
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            format="FLAC",
+        )
         voice_audio_current_frame = 0
         log_output = stack.enter_context(open(f"{recording_dir}/log.jsonl", "w"))
 
@@ -165,18 +184,30 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
         current_frame = 0
 
         def log(message: dict):
-            message['time'] = datetime.datetime.now().isoformat()
+            message["time"] = datetime.datetime.now().isoformat()
             print(json.dumps(message))
             log_output.write(f"{json.dumps(message)}\n")
             log_output.flush()
 
-        log({"event": "start", "language": language, "model": model_name, "filename": filename})
+        log(
+            {
+                "event": "start",
+                "language": language,
+                "model": model_name,
+                "filename": filename,
+            }
+        )
 
         chunk_size = 512
         min_silence_duration = 0.5  # seconds
         min_silence_chunks = int(min_silence_duration * SAMPLE_RATE / chunk_size)
 
-        vad_iterator = VADIterator(vad, sampling_rate=16000, threshold=0.3, min_silence_duration_ms=int(min_silence_duration * 1000))
+        vad_iterator = VADIterator(
+            vad,
+            sampling_rate=16000,
+            threshold=0.3,
+            min_silence_duration_ms=int(min_silence_duration * 1000),
+        )
         max_chunks_for_whisper = SAMPLE_RATE * 30 // chunk_size
 
         prepad_buffer = deque(maxlen=SAMPLE_RATE // chunk_size)
@@ -189,7 +220,13 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
             custom_input_segments_to_drop = 0
             for cs in custom_input_segments:
                 if segment.start_frame > cs.frame:
-                    log({"event": "custom_input_attached", "frame": cs.frame, "content": cs.content})
+                    log(
+                        {
+                            "event": "custom_input_attached",
+                            "frame": cs.frame,
+                            "content": cs.content,
+                        }
+                    )
                     note_output.write(f"{cs.content}\n")
                     custom_input_segments_to_drop += 1
 
@@ -198,7 +235,7 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
 
             chosen_transcription = segment.best_transcription()
 
-            if chosen_transcription.strip().endswith(('.', '!', '?')):
+            if chosen_transcription.strip().endswith((".", "!", "?")):
                 chosen_transcription += "\n"
 
             print(f"OUT: {chosen_transcription}")
@@ -206,7 +243,15 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
             note_output.write(f"{chosen_transcription}")
             note_output.flush()
 
-            log({"event": "segment_dropped", "start_frame": segment.start_frame, "num_chunks": len(segment.chunks), "transcriptions": segment.transcriptions, "chosen_transcription": chosen_transcription})
+            log(
+                {
+                    "event": "segment_dropped",
+                    "start_frame": segment.start_frame,
+                    "num_chunks": len(segment.chunks),
+                    "transcriptions": segment.transcriptions,
+                    "chosen_transcription": chosen_transcription,
+                }
+            )
 
         input_queue_mutex = threading.Lock()
         input_queue = deque()
@@ -216,7 +261,7 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
                 user_input = input()
                 with input_queue_mutex:
                     input_queue.append(user_input)
-        
+
         threading.Thread(target=custom_input_loop, daemon=True).start()
 
         try:
@@ -227,14 +272,18 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
                 original_audio_output.write(data)
 
                 vad_result = vad_iterator(data)
-                if vad_result is not None and 'start' in vad_result:
+                if vad_result is not None and "start" in vad_result:
                     log({"event": "speech_start", "start_frame": current_frame})
-                    current_speech_segment = SpeechSegment(start_frame=current_frame, chunks=[], transcriptions=[])
+                    current_speech_segment = SpeechSegment(
+                        start_frame=current_frame, chunks=[], transcriptions=[]
+                    )
 
                     # add a bit of pre-padding of original audio
                     if len(prepad_buffer) > 0:
                         num_prepad_chunks = min(5, len(prepad_buffer))
-                        current_speech_segment.chunks.extend(list(prepad_buffer)[-num_prepad_chunks:])
+                        current_speech_segment.chunks.extend(
+                            list(prepad_buffer)[-num_prepad_chunks:]
+                        )
 
                 if current_speech_segment is not None:
                     current_speech_segment.chunks.append(data)
@@ -245,12 +294,18 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
                     while len(input_queue) > 0:
                         user_input = input_queue.popleft()
                         if user_input.strip() != "":
-                            log({"event": "custom_input", "frame": current_frame, "content": user_input})
-                            custom_segment = CustomInputSegment(frame=current_frame, content=user_input)
-                          
+                            log(
+                                {
+                                    "event": "custom_input",
+                                    "frame": current_frame,
+                                    "content": user_input,
+                                }
+                            )
+                            custom_segment = CustomInputSegment(
+                                frame=current_frame, content=user_input
+                            )
+
                             custom_input_segments.append(custom_segment)
-
-
 
                 while len(command_queue) > 0:
                     command = command_queue.popleft()
@@ -272,26 +327,46 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
 
                 current_frame += data.shape[0]
 
-                if current_speech_segment is not None and vad_result is not None and 'end' in vad_result:
+                if (
+                    current_speech_segment is not None
+                    and vad_result is not None
+                    and "end" in vad_result
+                ):
                     log({"event": "speech_end", "end_frame": current_frame})
 
                     # TODO: remove non-speech from the end
                     # TODO: handle speech chunks longer than 30 seconds
 
                     # add some silence
-                    current_speech_segment.chunks.extend([np.zeros(chunk_size) for _ in range(min_silence_chunks)])
+                    current_speech_segment.chunks.extend(
+                        [np.zeros(chunk_size) for _ in range(min_silence_chunks)]
+                    )
                     speech_segments.append(current_speech_segment)
-                    voice_audio_output.write(np.concatenate(current_speech_segment.chunks))
-                    voice_audio_current_frame += sum(len(s) for s in current_speech_segment.chunks)
+                    voice_audio_output.write(
+                        np.concatenate(current_speech_segment.chunks)
+                    )
+                    voice_audio_current_frame += sum(
+                        len(s) for s in current_speech_segment.chunks
+                    )
                     current_speech_segment = None
 
-                    while sum(len(s.chunks) for s in speech_segments) > max_chunks_for_whisper:
+                    while (
+                        sum(len(s.chunks) for s in speech_segments)
+                        > max_chunks_for_whisper
+                    ):
                         segment = speech_segments.popleft()
                         drop_segment(segment)
 
-                    chunk = np.concatenate([s for s in speech_segments for s in s.chunks])
+                    chunk = np.concatenate(
+                        [s for s in speech_segments for s in s.chunks]
+                    )
 
-                    inputs = processor(chunk, sampling_rate=SAMPLE_RATE, return_tensors="pt", return_attention_mask=True).to(device, dtype=torch_dtype)
+                    inputs = processor(
+                        chunk,
+                        sampling_rate=SAMPLE_RATE,
+                        return_tensors="pt",
+                        return_attention_mask=True,
+                    ).to(device, dtype=torch_dtype)
 
                     # run generate with forced start tokens
                     with torch.no_grad():
@@ -313,15 +388,26 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
                     speech_segment_start_timestamp = 0.0
                     text_so_far = []
 
-                    for token_str, timestamp in zip(decoded, result["token_timestamps"][0]):
+                    for token_str, timestamp in zip(
+                        decoded, result["token_timestamps"][0]
+                    ):
                         # filter out special tokens `<|...|>`
                         if token_str.startswith("<|") and token_str.endswith("|>"):
                             continue
 
                         speech_segment = speech_segments[speech_segment_index]
 
-                        if timestamp > speech_segment_start_timestamp + speech_segment.duration_seconds() and speech_segment_index + 1 < len(speech_segments):
-                            speech_segment.transcriptions.append(processor.tokenizer.convert_tokens_to_string(text_so_far))
+                        if (
+                            timestamp
+                            > speech_segment_start_timestamp
+                            + speech_segment.duration_seconds()
+                            and speech_segment_index + 1 < len(speech_segments)
+                        ):
+                            speech_segment.transcriptions.append(
+                                processor.tokenizer.convert_tokens_to_string(
+                                    text_so_far
+                                )
+                            )
                             text_so_far = []
                             speech_segment_index += 1
                             speech_segment_start_timestamp = timestamp
@@ -329,17 +415,23 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
                         text_so_far.append(token_str)
 
                     if len(text_so_far) > 0:
-                        speech_segments[speech_segment_index].transcriptions.append(processor.tokenizer.convert_tokens_to_string(text_so_far))
+                        speech_segments[speech_segment_index].transcriptions.append(
+                            processor.tokenizer.convert_tokens_to_string(text_so_far)
+                        )
 
                     print("Segment buffer:")
                     print()
                     for s in speech_segments:
-                        print(f"Segment starting at {s.start_frame / SAMPLE_RATE:.2f}s, duration {s.duration_seconds():.2f}s:")
+                        print(
+                            f"Segment starting at {s.start_frame / SAMPLE_RATE:.2f}s, duration {s.duration_seconds():.2f}s:"
+                        )
                         for t in s.transcriptions:
                             print(f" - {t}")
-                 
+
                     # decode to text
-                    text = processor.batch_decode(generated_ids, skip_special_tokens=True, language=language)[0]
+                    text = processor.batch_decode(
+                        generated_ids, skip_special_tokens=True, language=language
+                    )[0]
                     log({"event": "transcription", "text": text})
 
         except KeyboardInterrupt:
@@ -349,7 +441,13 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
                 segment = speech_segments.popleft()
                 drop_segment(segment)
             for cs in custom_input_segments:
-                log({"event": "custom_input_attached", "frame": cs.frame, "content": cs.content})
+                log(
+                    {
+                        "event": "custom_input_attached",
+                        "frame": cs.frame,
+                        "content": cs.content,
+                    }
+                )
                 note_output.write(f"{cs.content}\n")
 
 
