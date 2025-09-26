@@ -1,6 +1,6 @@
 import sounddevice as sd
 import numpy as np
-from transformers import pipeline, WhisperProcessor, WhisperForConditionalGeneration
+from transformers import WhisperProcessor, WhisperForConditionalGeneration
 import datetime
 import os
 import torch
@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Optional
 import spacy
 import threading
+import socket
 
 from silero_vad import load_silero_vad, VADIterator
 
@@ -27,6 +28,7 @@ CHANNELS = 1
 OUTPUT_DIR = "notes"
 SUPPORTED_LANGUAGES = {"pl", "en", "es"}
 
+SOCKET_PATH = "/tmp/note_taker.sock"
 RECORDINGS_DIR = "recordings"
 
 
@@ -40,6 +42,30 @@ def get_language_choice():
             print(
                 f"Invalid language. Please choose from: {', '.join(SUPPORTED_LANGUAGES)}"
             )
+
+
+def command_server_loop(command_queue: deque, sock: socket.socket):
+    """Accepts connections on the given socket and adds commands to a queue."""
+    try:
+        while True:
+            connection, client_address = sock.accept()
+            try:
+                data = connection.recv(1024)
+                if data:
+                    try:
+                        message = json.loads(data.decode("utf-8"))
+                        if "command" in message:
+                            command_queue.append(message)
+                        else:
+                            print(f"Invalid command format: {message}")
+                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                        print(f"Error decoding command: {e}")
+            finally:
+                connection.close()
+    except Exception:
+        # Socket was likely closed by the main thread.
+        print("Command server shutting down.")
+
 
 @dataclass
 class SpeechSegment:
@@ -70,6 +96,7 @@ class SpeechSegment:
         #     counts[t] += 1
         # # return the most common transcription
         # return max(counts.items(), key=lambda x: x[1])[0]
+
 
 @dataclass
 class CustomInputSegment:
@@ -125,6 +152,16 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
         voice_audio_current_frame = 0
         log_output = stack.enter_context(open(f"{recording_dir}/log.jsonl", "w"))
 
+        # Command server setup
+        if os.path.exists(SOCKET_PATH):
+            os.unlink(SOCKET_PATH)
+        server_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stack.callback(server_socket.close)
+        stack.callback(lambda: os.path.exists(SOCKET_PATH) and os.unlink(SOCKET_PATH))
+        server_socket.bind(SOCKET_PATH)
+        server_socket.listen(1)
+        print(f"Command server listening on {SOCKET_PATH}")
+
         current_frame = 0
 
         def log(message: dict):
@@ -146,6 +183,7 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
         current_speech_segment: Optional[SpeechSegment] = None
         speech_segments = deque()
         custom_input_segments = deque()
+        command_queue = deque()
 
         def drop_segment(segment: SpeechSegment):
             custom_input_segments_to_drop = 0
@@ -157,7 +195,6 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
 
             for _ in range(custom_input_segments_to_drop):
                 custom_input_segments.popleft()
-
 
             chosen_transcription = segment.best_transcription()
 
@@ -210,6 +247,27 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
                         if user_input.strip() != "":
                             log({"event": "custom_input", "frame": current_frame, "content": user_input})
                             custom_segment = CustomInputSegment(frame=current_frame, content=user_input)
+                          
+                            custom_input_segments.append(custom_segment)
+
+
+
+                while len(command_queue) > 0:
+                    command = command_queue.popleft()
+                    log({"event": "command_received", "command": command})
+                    if command.get("command") == "insert_text":
+                        text = command.get("text", "")
+                        if text.strip() != "":
+                            log(
+                                {
+                                    "event": "custom_input",
+                                    "frame": current_frame,
+                                    "content": text,
+                                }
+                            )
+                            custom_segment = CustomInputSegment(
+                                frame=current_frame, content=text
+                            )
                             custom_input_segments.append(custom_segment)
 
                 current_frame += data.shape[0]
@@ -284,7 +342,6 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
                     text = processor.batch_decode(generated_ids, skip_special_tokens=True, language=language)[0]
                     log({"event": "transcription", "text": text})
 
-
         except KeyboardInterrupt:
             print("\nExiting note taker. Goodbye!")
 
@@ -297,4 +354,4 @@ def main(filename=None, input_audio_file=None, language='en', model_name=DEFAULT
 
 
 if __name__ == "__main__":
-    fire.Fire(main)
+    fire.Fire(main)  # pyright: ignore[reportUnknownMemberType]
