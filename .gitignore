@@ -3,3 +3,6 @@ __pycache__/
 
 notes/
 recordings/
+chunks/
+screenshots/
+.DS_Store
