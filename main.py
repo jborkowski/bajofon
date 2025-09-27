@@ -1,6 +1,5 @@
-def main():
-    print("Hello from bajofon!")
-
+from note_taker import main
+from fire import Fire
 
 if __name__ == "__main__":
-    main()
+    Fire(main)  # pyright: ignore[reportUnknownMemberType]

@@ -6,8 +6,8 @@ import threading
 from collections import deque
 from contextlib import ExitStack
 from dataclasses import dataclass
-from typing import Annotated, Optional, Literal, Union
-from pydantic import BaseModel, Field, ValidationError
+from typing import Annotated, Optional, Literal
+from pydantic import BaseModel, Field, ValidationError, TypeAdapter
 
 import fire
 import numpy as np
@@ -45,14 +45,22 @@ def get_language_choice():
 
 
 class InsertTextCommand(BaseModel):
-    """A command to insert a piece of text."""
+    """A command to insert a piece of text.
+
+    Example:
+    echo '{"command": "insert_text", "text": "hello from command line"}' | nc -U /tmp/note_taker.sock
+    """
 
     command: Literal["insert_text"]
     text: str
 
 
 class ScreenshotCommand(BaseModel):
-    """A command to insert screenshot"""
+    """A command to insert screenshot
+
+    Example:
+    exec take_screenshot.sh
+    """
 
     command: Literal["screenshot"]
     path: str
@@ -61,6 +69,8 @@ class ScreenshotCommand(BaseModel):
 Command = Annotated[
     InsertTextCommand | ScreenshotCommand, Field(discriminator="command")
 ]
+
+command_adapter: TypeAdapter[Command] = TypeAdapter(Command)
 
 
 def command_server_loop(command_queue: deque[Command], sock: socket.socket):
@@ -73,7 +83,7 @@ def command_server_loop(command_queue: deque[Command], sock: socket.socket):
                 if data:
                     try:
                         message = json.loads(data.decode("utf-8"))
-                        command = Command.model_validate(message)
+                        command = command_adapter.validate_python(message)
                         command_queue.append(command)
                     except (json.JSONDecodeError, UnicodeDecodeError) as e:
                         print(f"Error decoding command: {e}")
@@ -356,6 +366,7 @@ def main(
                                 "content": command.path,
                             }
                         )
+                        # does raw path okay?
                         custom_segment = CustomInputSegment(
                             frame=current_frame, content=command.path
                         )
