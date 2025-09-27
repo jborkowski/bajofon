@@ -1,22 +1,22 @@
-import sounddevice as sd
-import numpy as np
-from transformers import WhisperProcessor, WhisperForConditionalGeneration
 import datetime
-import os
-import torch
-import traceback
-from collections import deque
-import fire
-from contextlib import ExitStack
-import soundfile
 import json
-from dataclasses import dataclass
-from typing import Optional
-import spacy
-import threading
+import os
 import socket
+import threading
+from collections import deque
+from contextlib import ExitStack
+from dataclasses import dataclass
+from typing import Annotated, Optional, Literal, Union
+from pydantic import BaseModel, Field, ValidationError
 
-from silero_vad import load_silero_vad, VADIterator
+import fire
+import numpy as np
+import sounddevice as sd
+import soundfile
+import torch
+from silero_vad import VADIterator, load_silero_vad
+from transformers import WhisperForConditionalGeneration, WhisperProcessor
+
 
 # --- Configuration ---
 DEFAULT_MODEL_NAME = "openai/whisper-medium"
@@ -44,7 +44,26 @@ def get_language_choice():
             )
 
 
-def command_server_loop(command_queue: deque, sock: socket.socket):
+class InsertTextCommand(BaseModel):
+    """A command to insert a piece of text."""
+
+    command: Literal["insert_text"]
+    text: str
+
+
+class ScreenshotCommand(BaseModel):
+    """A command to insert screenshot"""
+
+    command: Literal["screenshot"]
+    path: str
+
+
+Command = Annotated[
+    InsertTextCommand | ScreenshotCommand, Field(discriminator="command")
+]
+
+
+def command_server_loop(command_queue: deque[Command], sock: socket.socket):
     """Accepts connections on the given socket and adds commands to a queue."""
     try:
         while True:
@@ -54,12 +73,12 @@ def command_server_loop(command_queue: deque, sock: socket.socket):
                 if data:
                     try:
                         message = json.loads(data.decode("utf-8"))
-                        if "command" in message:
-                            command_queue.append(message)
-                        else:
-                            print(f"Invalid command format: {message}")
+                        command = Command.model_validate(message)
+                        command_queue.append(command)
                     except (json.JSONDecodeError, UnicodeDecodeError) as e:
                         print(f"Error decoding command: {e}")
+                    except ValidationError as e:
+                        print(f"Invalid command received: {e}")
             finally:
                 connection.close()
     except Exception:
@@ -145,7 +164,7 @@ def main(
     print(
         f"\nNew note session started. Language: {language.upper()}. Saving to: {filename}"
     )
-    print(f"Recording... Press Ctrl+C to stop and save.")
+    print("Recording... Press Ctrl+C to stop and save.")
 
     print(f"Debug files at: {recording_dir}")
 
@@ -213,8 +232,8 @@ def main(
         prepad_buffer = deque(maxlen=SAMPLE_RATE // chunk_size)
         current_speech_segment: Optional[SpeechSegment] = None
         speech_segments = deque()
-        custom_input_segments = deque()
-        command_queue = deque()
+        custom_input_segments: deque[CustomInputSegment] = deque()
+        command_queue: deque[Command] = deque()
 
         def drop_segment(segment: SpeechSegment):
             custom_input_segments_to_drop = 0
@@ -264,6 +283,11 @@ def main(
 
         threading.Thread(target=custom_input_loop, daemon=True).start()
 
+        command_thread = threading.Thread(
+            target=command_server_loop, args=(command_queue, server_socket), daemon=True
+        )
+        command_thread.start()
+
         try:
             while not mic_stream.closed:
                 data, _ = mic_stream.read(chunk_size)
@@ -309,9 +333,9 @@ def main(
 
                 while len(command_queue) > 0:
                     command = command_queue.popleft()
-                    log({"event": "command_received", "command": command})
-                    if command.get("command") == "insert_text":
-                        text = command.get("text", "")
+                    log({"event": "command_received", "command": command.model_dump()})
+                    if command.command == "insert_text":
+                        text = command.text
                         if text.strip() != "":
                             log(
                                 {
@@ -324,6 +348,18 @@ def main(
                                 frame=current_frame, content=text
                             )
                             custom_input_segments.append(custom_segment)
+                    elif command.command == "screenshot":
+                        log(
+                            {
+                                "event": "custom_input",
+                                "frame": current_frame,
+                                "content": command.path,
+                            }
+                        )
+                        custom_segment = CustomInputSegment(
+                            frame=current_frame, content=command.path
+                        )
+                        custom_input_segments.append(custom_segment)
 
                 current_frame += data.shape[0]
 

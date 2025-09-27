@@ -40,6 +40,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "fire" },
     { name = "numpy" },
+    { name = "pydantic" },
     { name = "scipy" },
     { name = "silero-vad" },
     { name = "sounddevice" },
@@ -62,6 +63,7 @@ requires-dist = [
     { name = "bitsandbytes", marker = "platform_machine != 'arm64' and sys_platform == 'linux' and extra == 'llm'" },
     { name = "fire" },
     { name = "numpy" },
+    { name = "pydantic", specifier = ">=2.11.9" },
     { name = "scipy" },
     { name = "sentencepiece", marker = "extra == 'llm'" },
     { name = "silero-vad" },
